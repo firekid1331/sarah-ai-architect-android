@@ -20,7 +20,7 @@ jobs:
       ORIGINAL_ARTIFACT: '12094679619'
       ORIGINAL_APK_SHA256: 3b3228e794ebae9b584ebde3c5c86c7bc619741d6ca334dd64ded301eff6b6d7
       ORIGINAL_ARCHIVE_SHA256: 4ad8a7f52bd2af9e84af31a776ad94ece51f43c885431b67f1f00102bd2c8000
-      SRC: ${{ runner.temp }}/sarah-original-source
+      SRC: /tmp/sarah-original-source
       OUT: ${{ github.workspace }}/rebuild-evidence
     steps:
       - name: Checkout independent evidence branch (pinned action)
@@ -251,3 +251,4 @@ jobs:
           path: rebuild-evidence/
           retention-days: 14
           if-no-files-found: warn
+          
