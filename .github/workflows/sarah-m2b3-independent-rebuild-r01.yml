@@ -1,0 +1,253 @@
+# SARAH M2 Build #3 – separate noninstalling evidence-only rebuild.
+# Source pinned to immutable original commit. Does not install/execute APK.
+# GitHub cloud runner can vary: record differences, never presume equivalence.
+name: SARAH M2B3 Independent Noninstalling Rebuild R01
+"on":
+  push:
+    paths:
+      - .github/workflows/sarah-m2b3-independent-rebuild-r01.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  noninstalling-rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PIN_SHA: d16f90a20b5f111ba70cc6d1d032f1435b0a06b3
+      ORIGINAL_RUN: '39017170064'
+      ORIGINAL_ARTIFACT: '12094679619'
+      ORIGINAL_APK_SHA256: 3b3228e794ebae9b584ebde3c5c86c7bc619741d6ca334dd64ded301eff6b6d7
+      ORIGINAL_ARCHIVE_SHA256: 4ad8a7f52bd2af9e84af31a776ad94ece51f43c885431b67f1f00102bd2c8000
+      SRC: ${{ runner.temp }}/sarah-original-source
+      OUT: ${{ github.workspace }}/rebuild-evidence
+    steps:
+      - name: Checkout independent evidence branch (pinned action)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable original source and workflow and unpack into isolated directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$SRC" "$OUT"
+          git cat-file -e "$PIN_SHA^{commit}"
+          test "$(git rev-parse "$PIN_SHA:sarah-m2-offline-source.zip")" = 'bccd89181ad720b1bbd1f6c716f39416637ec8b7'
+          test "$(git rev-parse "$PIN_SHA:.github/workflows/sarah-m2-browser-build.yml")" = '6e82338b50c6699ee2f042e9a372d546f273d013'
+          git show "$PIN_SHA:sarah-m2-offline-source.zip" > "$RUNNER_TEMP/original-source.zip"
+          git show "$PIN_SHA:.github/workflows/sarah-m2-browser-build.yml" > "$OUT/ORIGINAL_EXECUTED_WORKFLOW_EXACT.yml"
+          printf '%s  %s\n' '9d50d3de33954ab2b209103976388dc825e3fd2615fe581a7f77168c250a64e8' "$RUNNER_TEMP/original-source.zip" | sha256sum -c -
+          test "$(wc -c < "$OUT/ORIGINAL_EXECUTED_WORKFLOW_EXACT.yml")" -eq 4258
+          python3 - <<'PY2'
+          import csv,hashlib,io,os,pathlib,stat,zipfile
+          src=pathlib.Path(os.environ['SRC']);p=pathlib.Path(os.environ['RUNNER_TEMP'])/'original-source.zip'
+          with zipfile.ZipFile(p) as z:
+              if z.testzip(): raise SystemExit('Corrupt source archive')
+              entries=[i for i in z.infolist() if not i.is_dir()]
+              if len(entries)>64 or sum(i.file_size for i in entries)>2_000_000: raise SystemExit('Bounds exceeded')
+              seen=set()
+              for i in entries:
+                  n=i.filename;parts=pathlib.PurePosixPath(n)
+                  if not n or n in seen or n.startswith('/') or '..' in parts.parts or '\\' in n or stat.S_IFMT(i.external_attr>>16)==stat.S_IFLNK:raise SystemExit('Unsafe path')
+                  seen.add(n)
+                  t=src.joinpath(*parts.parts);t.parent.mkdir(parents=True,exist_ok=True)
+                  with t.open('xb') as f:f.write(z.read(i))
+          with (src/'SHA256_MANIFEST.csv').open(newline='') as f:rows=list(csv.DictReader(f))
+          if len(rows)!=15:raise SystemExit('Unexpected source manifest entries')
+          for r in rows:
+              d=(src/r['relative_path']).read_bytes()
+              if len(d)!=int(r['bytes']) or hashlib.sha256(d).hexdigest()!=r['sha256']:
+                  raise SystemExit('Manifest mismatch: '+r['relative_path'])
+          if set(r['relative_path'] for r in rows)!=(seen-{'SHA256_MANIFEST.csv'}):
+              raise SystemExit('Source manifest coverage mismatch')
+          print('SOURCE_HASHES_AND_COVERAGE_PASS 15/15')
+          PY2
+          sha256sum "$RUNNER_TEMP/original-source.zip" "$OUT/ORIGINAL_EXECUTED_WORKFLOW_EXACT.yml" > "$OUT/ORIGINAL_INPUT_SHA256.txt"
+          git rev-parse HEAD > "$OUT/REBUILD_BRANCH_COMMIT.txt"
+          echo "$PIN_SHA" > "$OUT/ORIGINAL_SOURCE_COMMIT.txt"
+      - name: Set up Temurin 17 pinned action
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Independently replay host boundary tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$SRC" && python3 -m unittest discover -s tests -p 'test_*.py' -v) 2>&1 | tee "$OUT/HOST_PYTHON.log"
+          mkdir -p "$RUNNER_TEMP/sarah-host-java"
+          javac -d "$RUNNER_TEMP/sarah-host-java" "$SRC/app/src/main/java/org/saraharchitect/offline/OfflineContent.java" "$SRC/tests/OfflineHostTest.java"
+          java -cp "$RUNNER_TEMP/sarah-host-java" OfflineHostTest 2>&1 | tee "$OUT/HOST_JAVA.log"
+      - name: Set up Android command line SDK pinned action
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+      - name: Install same SDK 35 and build-tools 35.0.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 2>&1 | tee "$OUT/SDK_INSTALL.log"
+      - name: Set up Gradle 8.10.2 pinned action with clean cache
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+        with:
+          gradle-version: '8.10.2'
+          cache-disabled: true
+      - name: Record fresh toolchain and independently compile (never install)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf 'REBUILD_KIND=separate-GitHub-runner-NO_ANDROID_INSTALL\n'
+            printf 'RUNNER_OS=%s\nIMAGE_OS=%s\nIMAGE_VERSION=%s\nRUNNER_ARCH=%s\n' "${RUNNER_OS:-}" "${ImageOS:-}" "${ImageVersion:-}" "${RUNNER_ARCH:-}"
+            printf 'RUNNER_NAME=%s\n' "${RUNNER_NAME:-}"
+            printf 'GITHUB_SHA=%s\nPIN_SHA=%s\n' "$GITHUB_SHA" "$PIN_SHA"
+            printf 'LANG=%s\nTZ=%s\nJAVA_HOME=%s\nANDROID_HOME=%s\n' "${LANG:-}" "${TZ:-}" "${JAVA_HOME:-}" "${ANDROID_HOME:-}"
+            cat /etc/os-release
+            java -version 2>&1; javac -version 2>&1
+            gradle --version 2>&1
+            sdkmanager --version 2>&1
+            "$ANDROID_HOME/build-tools/35.0.0/aapt" version 2>&1
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" --version 2>&1
+          } | tee "$OUT/TOOLCHAIN_AND_RUNNER.txt"
+          (cd "$SRC" && gradle --no-daemon buildEnvironment) 2>&1 | tee "$OUT/GRADLE_BUILD_ENVIRONMENT.log"
+          (cd "$SRC" && gradle --no-daemon :app:dependencies --configuration debugRuntimeClasspath) 2>&1 | tee "$OUT/GRADLE_RUNTIME_DEPENDENCIES.log"
+          (cd "$SRC" && gradle --no-daemon --stacktrace :app:assembleDebug) 2>&1 | tee "$OUT/REBUILD_GRADLE_ASSEMBLE.log"
+          test -s "$SRC/app/build/outputs/apk/debug/app-debug.apk"
+          cp "$SRC/app/build/outputs/apk/debug/app-debug.apk" "$OUT/REBUILT_UNINSTALLED_DEBUG.apk"
+          sha256sum "$OUT/REBUILT_UNINSTALLED_DEBUG.apk" > "$OUT/REBUILT_APK_SHA256.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$OUT/REBUILT_UNINSTALLED_DEBUG.apk" > "$OUT/REBUILT_APK_SIGNATURE.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$OUT/REBUILT_UNINSTALLED_DEBUG.apk" > "$OUT/REBUILT_APK_PERMISSIONS.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$OUT/REBUILT_UNINSTALLED_DEBUG.apk" > "$OUT/REBUILT_APK_BADGING.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump xmltree "$OUT/REBUILT_UNINSTALLED_DEBUG.apk" AndroidManifest.xml > "$OUT/REBUILT_COMPILED_MANIFEST_TREE.txt"
+          if grep -Eq 'uses-permission|permission:' "$OUT/REBUILT_APK_PERMISSIONS.txt"; then
+            echo 'FAIL: Unexpected APK permission';exit 2
+          fi
+          if grep -Eq '^[[:space:]]*E: (service|receiver|provider|uses-permission)[[:space:]]' "$OUT/REBUILT_COMPILED_MANIFEST_TREE.txt"; then
+            echo 'FAIL: Unexpected compiled manifest permission or component'; exit 2
+          fi
+          find "$ANDROID_HOME/platforms/android-35" "$ANDROID_HOME/build-tools/35.0.0" -type f -print0 | sort -z | xargs -0 sha256sum > "$OUT/ANDROID_SDK_FILES_SHA256.txt"
+          if test -d "$HOME/.gradle/caches/modules-2/files-2.1"; then
+            find "$HOME/.gradle/caches/modules-2/files-2.1" -type f -print0 | sort -z | xargs -0 sha256sum > "$OUT/GRADLE_RESOLVED_ARTIFACTS_SHA256.txt"
+          else
+            echo 'GRADLE_CACHE_PATH_NOT_FOUND' > "$OUT/GRADLE_RESOLVED_ARTIFACTS_SHA256.txt"
+          fi
+      - name: Fetch original authenticated artifact, compare full APK and unsigned ZIP payloads
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github+json'             "repos/$GITHUB_REPOSITORY/actions/artifacts/$ORIGINAL_ARTIFACT/zip" > "$OUT/ORIGINAL_GITHUB_ARTIFACT.zip"
+          printf '%s  %s\n' "$ORIGINAL_ARCHIVE_SHA256" "$OUT/ORIGINAL_GITHUB_ARTIFACT.zip" | sha256sum -c -
+          unzip -p "$OUT/ORIGINAL_GITHUB_ARTIFACT.zip" 'app/build/outputs/apk/debug/app-debug.apk' > "$OUT/ORIGINAL_UNINSTALLED_DEBUG.apk"
+          printf '%s  %s\n' "$ORIGINAL_APK_SHA256" "$OUT/ORIGINAL_UNINSTALLED_DEBUG.apk" | sha256sum -c -
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$OUT/ORIGINAL_UNINSTALLED_DEBUG.apk" > "$OUT/ORIGINAL_APK_SIGNATURE.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$OUT/ORIGINAL_UNINSTALLED_DEBUG.apk" > "$OUT/ORIGINAL_APK_PERMISSIONS.txt"
+          python3 - "$OUT/ORIGINAL_UNINSTALLED_DEBUG.apk" "$OUT/REBUILT_UNINSTALLED_DEBUG.apk" "$OUT/APK_LAYER_COMPARISON.json" <<'PYCOMPARE'
+          #!/usr/bin/env python3
+          """Non-installing APK payload comparison; DOES NOT grant qualification.
+
+          All names, payload SHA256, central directory metadata, signing-related ZIP entries,
+          byte-level unsigned payload signatures, and APK file SHA256 are reported.
+          Disagreement never turns into PASS. Only whole-APK equality is BIT_FOR_BIT.
+          """
+          import hashlib, json, pathlib, sys, zipfile
+
+          def h(b): return hashlib.sha256(b).hexdigest()
+
+          def describe(path):
+              with zipfile.ZipFile(path) as z:
+                  bad = z.testzip()
+                  if bad: raise ValueError('Corrupt ZIP entry: '+bad)
+                  names = z.namelist()
+                  if len(names)!=len(set(names)):
+                      raise ValueError('Duplicate names')
+                  info = {}
+                  for obj in z.infolist():
+                      info[obj.filename] = {
+                          'sha256':h(z.read(obj)), 'size':obj.file_size,
+                          'compress_type':obj.compress_type,'compressed_size':obj.compress_size,
+                          'date_time':list(obj.date_time),'flag_bits':obj.flag_bits,
+                          'external_attr':obj.external_attr,'header_offset':obj.header_offset,
+                          'CRC':obj.CRC
+                      }
+                  return {'file_sha256':h(path.read_bytes()), 'file_size':path.stat().st_size,
+                          'entry_order':names,'entries':info}
+
+          def is_signing_entry(name):
+              upper=name.upper()
+              return upper.startswith('META-INF/') and upper.endswith(('.RSA','.DSA','.EC','.SF','.MF'))
+
+          def main(orig,new,out):
+              o=describe(pathlib.Path(orig)); n=describe(pathlib.Path(new))
+              oo=o['entries']; nn=n['entries']
+              names=sorted(set(oo)|set(nn))
+              rows=[]
+              for name in names:
+                  p=oo.get(name);q=nn.get(name)
+                  rows.append({'path':name,'class':'signing_zip_entry' if is_signing_entry(name) else 'payload',
+                    'original_sha256':p['sha256'] if p else None,
+                    'rebuild_sha256':q['sha256'] if q else None,
+                    'payload_equal': bool(p and q and p['sha256']==q['sha256']),
+                    'metadata_equal': bool(p and q and p==q)})
+              payload=[r for r in rows if r['class']=='payload']
+              signed_equal=o['file_sha256']==n['file_sha256']
+              payload_equal=bool(payload) and all(x['payload_equal'] for x in payload) and set(oo)==set(nn)
+              required=['AndroidManifest.xml','classes.dex','resources.arsc']
+              required_present=all(x in oo and x in nn for x in required)
+              strict_manifest=oo.get('AndroidManifest.xml',{}).get('sha256')==nn.get('AndroidManifest.xml',{}).get('sha256') and 'AndroidManifest.xml' in oo and 'AndroidManifest.xml' in nn
+              code_names=sorted(x for x in set(oo)|set(nn) if x.startswith('classes') and x.endswith('.dex'))
+              dex_match=bool(code_names) and all(x in oo and x in nn and oo[x]['sha256']==nn[x]['sha256'] for x in code_names)
+              resource_names=sorted(x for x in set(oo)|set(nn) if x=='resources.arsc' or x.startswith(('res/','assets/','lib/')))
+              resources_match=all(x in oo and x in nn and oo[x]['sha256']==nn[x]['sha256'] for x in resource_names)
+              if signed_equal:
+                  verdict='BIT_FOR_BIT_EQUAL'
+              elif payload_equal and required_present and strict_manifest and dex_match and resources_match:
+                  verdict='SIGNED_BYTES_DIFFER_PAYLOAD_EQUAL'
+              else: verdict='PAYLOAD_MISMATCH_REQUIRES_REVIEW'
+              result={'verdict':verdict,'comparison_scope':'ZIP-contained payloads; v2 signing block, ZIP headers and alignments can differ',
+                'original':o,'rebuilt':n,'all_zip_payload_entries_equal':payload_equal,
+                'required_entries_present':required_present,'compiled_manifest_equal':strict_manifest,
+                'dex_files':code_names,'dex_equal':dex_match,'resource_files':resource_names,
+                'resources_equal':resources_match,'zip_entry_order_equal':o['entry_order']==n['entry_order'],
+                'all_zip_metadata_equal':all(x['metadata_equal'] for x in rows),
+                'entries_comparison':rows}
+              pathlib.Path(out).parent.mkdir(parents=True,exist_ok=True)
+              pathlib.Path(out).write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+              print('COMPARISON_VERDICT='+verdict)
+              print('ORIGINAL_SHA256='+o['file_sha256'])
+              print('REBUILT_SHA256='+n['file_sha256'])
+              print('ZIP_PAYLOAD_EQUAL='+str(payload_equal))
+              print('DEX_EQUAL='+str(dex_match))
+              print('MANIFEST_EQUAL='+str(strict_manifest))
+              print('RESOURCES_EQUAL='+str(resources_match))
+              return 0 if verdict in ('BIT_FOR_BIT_EQUAL','SIGNED_BYTES_DIFFER_PAYLOAD_EQUAL') else 2
+
+          if __name__=='__main__':
+              if len(sys.argv)!=4:
+                  raise SystemExit('usage: compare_apk.py original.apk rebuilt.apk comparison.json')
+              sys.exit(main(*sys.argv[1:]))
+          PYCOMPARE
+      - name: Capture final host evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          python3 - <<'PY3'
+          import hashlib, pathlib, csv,os
+          out=pathlib.Path(os.environ['OUT'])
+          files=sorted(p for p in out.iterdir() if p.is_file() and p.name!='FINAL_TRANSFER_SHA256.csv')
+          with (out/'FINAL_TRANSFER_SHA256.csv').open('w',newline='') as f:
+              w=csv.writer(f);w.writerow(['file','bytes','sha256'])
+              for p in files:w.writerow([p.name,p.stat().st_size,hashlib.sha256(p.read_bytes()).hexdigest()])
+          print('Wrote SHA256 manifest for',len(files),'evidence files')
+          PY3
+      - name: Publish non-installing evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sarah-m2b3-independent-rebuild-evidence-r01
+          path: rebuild-evidence/
+          retention-days: 14
+          if-no-files-found: warn
