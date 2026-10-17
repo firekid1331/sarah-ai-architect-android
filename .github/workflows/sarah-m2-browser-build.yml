@@ -1,0 +1,85 @@
+name: SARAH M2 Offline Android - Browser Upload Build Only
+"on":
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-tests-and-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check source archive and unpack only expected paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "9d50d3de33954ab2b209103976388dc825e3fd2615fe581a7f77168c250a64e8  sarah-m2-offline-source.zip" | sha256sum -c -
+          python3 - <<'PYTHON'
+          import os, pathlib, stat, zipfile
+          archive = pathlib.Path('sarah-m2-offline-source.zip')
+          with zipfile.ZipFile(archive) as z:
+              entries = [i for i in z.infolist() if not i.is_dir()]
+              if len(entries) > 64 or sum(i.file_size for i in entries) > 2_000_000:
+                  raise SystemExit('ZIP bounds rejected')
+              seen = set()
+              for i in entries:
+                  p = pathlib.PurePosixPath(i.filename)
+                  if p.is_absolute() or '..' in p.parts or not i.filename or '\\' in i.filename or i.filename in seen:
+                      raise SystemExit('Unsafe ZIP path: ' + i.filename)
+                  seen.add(i.filename)
+                  if stat.S_IFMT(i.external_attr >> 16) == stat.S_IFLNK:
+                      raise SystemExit('Symlinks rejected')
+                  if p.parts[0] == '.github':
+                      continue
+                  target = pathlib.Path(*p.parts)
+                  if target.exists():
+                      raise SystemExit('Refusing overwrite: ' + str(target))
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with z.open(i) as source, target.open('xb') as output:
+                      import shutil
+                      shutil.copyfileobj(source, output)
+          PYTHON
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Host-only source and boundary tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          mkdir -p /tmp/sarah-check
+          javac -d /tmp/sarah-check app/src/main/java/org/saraharchitect/offline/OfflineContent.java tests/OfflineHostTest.java
+          java -cp /tmp/sarah-check OfflineHostTest
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Compile Android candidate - do not install
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Capture build evidence and block unapproved permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          sha256sum "$APK" | tee evidence/APK_SHA256.txt
+          find app/src/main -type f -print0 | sort -z | xargs -0 sha256sum > evidence/SOURCE_SHA256.txt
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee evidence/APK_SIGNATURE.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK" | tee evidence/PERMISSIONS.txt
+          if grep -Eq 'uses-permission|permission:' evidence/PERMISSIONS.txt; then
+            echo 'FAIL: Permissions unexpected'; exit 1
+          fi
+          printf 'COMMIT_SHA=%s\nWORKFLOW_RUN=%s\nSCOPE=BUILD_ONLY_NO_INSTALL\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > evidence/BUILD_PROVENANCE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sarah-m2-build-only-${{ github.run_number }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            evidence/*.txt
+          retention-days: 14
+          if-no-files-found: error
+          
