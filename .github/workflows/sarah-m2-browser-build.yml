@@ -32,6 +32,11 @@ jobs:
                   if p.parts[0] == '.github':
                       continue
                   target = pathlib.Path(*p.parts)
+                  if i.filename == 'README.md' and target.exists():
+                      backup = pathlib.Path('GITHUB_INITIAL_README.md')
+                      if backup.exists():
+                          raise SystemExit('Refusing README backup overwrite')
+                      target.rename(backup)
                   if target.exists():
                       raise SystemExit('Refusing overwrite: ' + str(target))
                   target.parent.mkdir(parents=True, exist_ok=True)
