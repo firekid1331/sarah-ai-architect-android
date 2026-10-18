@@ -1,0 +1,1 @@
+package android.view;public class View {public interface OnClickListener {void onClick(View v);}private OnClickListener click; public void setOnClickListener(OnClickListener v){click=v;}public void performClick(){if(click!=null)click.onClick(this);} public void setPadding(int a,int b,int c,int d){}public void setBackgroundColor(int c){} }
