@@ -1,0 +1,38 @@
+name: SARAH one-time manifest recovery
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate canonical manifest and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -f .github/workflows/sarah-one-time-manifest-recovery.yml
+          python3 - <<'PY'
+          import csv
+          import pathlib
+          import sys
+          sys.path.insert(0, str(pathlib.Path('tools').resolve()))
+          import verify_source_manifest as verifier
+          inventory = verifier.inventory()
+          with open('SHA256_MANIFEST.csv', 'w', encoding='utf-8', newline='') as output:
+              writer = csv.writer(output, lineterminator='\n')
+              writer.writerow(['path', 'sha256'])
+              writer.writerows(sorted(inventory.items()))
+          print('Generated entries:', len(inventory))
+          PY
+          python3 tools/verify_source_manifest.py
+      - name: Commit manifest and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SHA256_MANIFEST.csv
+          git commit -m 'Restore canonical source SHA256 manifest'
+          git push origin HEAD:main
