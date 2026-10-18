@@ -1,0 +1,1 @@
+package android.widget;public class Button extends TextView {public static java.util.List<Button> created=new java.util.ArrayList<>();public Button(android.app.Activity a){super(a);created.add(this);}public void setAllCaps(boolean b){} }

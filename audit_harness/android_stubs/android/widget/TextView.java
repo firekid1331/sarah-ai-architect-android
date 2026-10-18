@@ -1,0 +1,1 @@
+package android.widget;public class TextView extends android.view.View {protected String text="";public TextView(android.app.Activity a){}public void setText(String v){text=v;}public String getText(){return text;}public void setTextSize(int z){}public void setTextColor(int c){}public void setTypeface(android.graphics.Typeface f,int style){}public void setGravity(int g){} }

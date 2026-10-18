@@ -1,0 +1,1 @@
+package android.widget;public class ScrollView extends android.view.View {public ScrollView(android.app.Activity a){}public void setFillViewport(boolean b){}public void addView(android.view.View v){} }
