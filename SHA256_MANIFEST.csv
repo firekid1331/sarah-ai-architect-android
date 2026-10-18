@@ -1,6 +1,6 @@
 path,sha256
 .github/workflows/sarah-m2-browser-build.yml,d4b2698fa48352bacdd6b3829e157b1ba711c103f41fb9f1c240414795d2d8da
-.github/workflows/sarah-m2-offline-apk.yml,dba31cc536822a9b63616336418ba88329a683c862f686e01c6d1c1f1f1f246a
+.github/workflows/sarah-m2-offline-apk.yml,9211be868933160a566866d8375b1c35775e01597a48c01c0af1647558fe51a6
 .github/workflows/sarah-m2b3-independent-rebuild-r01.yml,fcc23e1ec69c4ae061a31b46ea911fc5fd6ba8f5899b17b9a1358562dee1f479
 .gitignore,a2e77ee6109a758f40ecdaf6be958746dabefa04374beb590afe969e4ed1d693
 README.md,187028a296245d7907a8361225197c3b526311b6994fd26c8dde04163396583b
