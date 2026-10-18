@@ -1,0 +1,1 @@
+package android.os;public class Bundle {java.util.Map<String,Integer> m=new java.util.HashMap<>();public int getInt(String k,int d){return m.getOrDefault(k,d);}public void putInt(String k,int v){m.put(k,v);}}
