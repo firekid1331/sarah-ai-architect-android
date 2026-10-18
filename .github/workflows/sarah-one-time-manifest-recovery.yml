@@ -12,7 +12,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-                    export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONDONTWRITEBYTECODE=1
           git rm -f .github/workflows/sarah-one-time-manifest-recovery.yml
           python3 - <<'PY'
           import csv
