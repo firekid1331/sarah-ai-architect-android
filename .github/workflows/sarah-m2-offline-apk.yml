@@ -1,0 +1,141 @@
+name: SARAH M2 Offline Android Build-Only
+'on':
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  host-scoped:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify canonical active source SHA256 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sarah-host-evidence"
+          test ! -L "$GITHUB_WORKSPACE/tools/verify_source_manifest.py"
+          test ! -L "$GITHUB_WORKSPACE/SHA256_MANIFEST.csv"
+          test "$(realpath -e "$GITHUB_WORKSPACE")" = "$GITHUB_WORKSPACE"
+          printf '%s  %s\n' 'e0db83c0583c686876beccdd77220c0b810aa04172d2800849f3f2c05d918047' tools/verify_source_manifest.py | sha256sum -c -
+          (cd "$RUNNER_TEMP" && python3 -I -S -B "$GITHUB_WORKSPACE/tools/verify_source_manifest.py" --expected-root "$GITHUB_WORKSPACE") | tee "$RUNNER_TEMP/sarah-host-evidence/source-manifest-verification.txt"
+      - name: Adversarial source manifest negatives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I -S -B tools/test_manifest_adversarial.py | tee "$RUNNER_TEMP/sarah-host-evidence/manifest-negative-tests.txt"
+          python3 -I -S -B tools/test_host_evidence_adversarial.py
+          python3 -I -S -B tools/test_r07_policy.py | tee "$RUNNER_TEMP/sarah-host-evidence/r07-policy-tests.txt"
+          python3 -I -S -B tools/test_r08_chained_policy.py | tee "$RUNNER_TEMP/sarah-host-evidence/r08-chained-policy-tests.txt"
+          python3 -I -S -B tools/test_r09_policy.py | tee "$RUNNER_TEMP/sarah-host-evidence/r09-policy-tests.txt"
+          python3 -I -S -B tools/test_r10_policy.py | tee "$RUNNER_TEMP/sarah-host-evidence/r10-policy-tests.txt"
+      - name: Nonconstructing Android source and manifest gates
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -I -S -B -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Pure-Java local model checks
+        run: |
+          mkdir -p /tmp/sarah-m2-check
+          javac -d /tmp/sarah-m2-check app/src/main/java/org/saraharchitect/offline/OfflineContent.java app/src/main/java/org/saraharchitect/offline/ScreenModel.java tests/OfflineHostTest.java tests/ScreenModelHostTest.java
+          java -cp /tmp/sarah-m2-check OfflineHostTest
+          java -cp /tmp/sarah-m2-check ScreenModelHostTest
+      - name: Synthetic Android Activity lifecycle regression (host-only)
+        run: |
+          mkdir -p /tmp/sarah-m2-activity
+          javac -d /tmp/sarah-m2-activity $(find audit_harness/android_stubs -name '*.java' | sort) app/src/main/java/org/saraharchitect/offline/*.java
+          java -cp /tmp/sarah-m2-activity ActivityAdversarial
+      - name: Generate format-valid host evidence after regression gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'HOST_REGRESSIONS PASS\n' > "$RUNNER_TEMP/sarah-host-evidence/host-regressions.txt"
+          (cd "$RUNNER_TEMP/sarah-host-evidence" && python3 -I -S -B "$GITHUB_WORKSPACE/tools/attest_host_evidence.py")
+          printf '%s  %s\n' 'f2e474b0e1e955fce337a4178d012490e8e6a602e51e760101f52074ca5d7295' tools/verify_host_evidence.py | sha256sum -c -
+          python3 -I -S -B tools/verify_host_evidence.py "$RUNNER_TEMP/sarah-host-evidence" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+      - name: Upload complete host verification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarah-host-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sarah-host-evidence/*.txt
+            ${{ runner.temp }}/sarah-host-evidence/*.json
+          if-no-files-found: error
+  sdk-apk:
+    needs: host-scoped
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Download host verification evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: sarah-host-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sarah-host-downloaded
+      - name: Validate transferred host evidence format (not runner provenance)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -L "$GITHUB_WORKSPACE/tools/verify_source_manifest.py"
+          test ! -L "$GITHUB_WORKSPACE/SHA256_MANIFEST.csv"
+          test "$(realpath -e "$GITHUB_WORKSPACE")" = "$GITHUB_WORKSPACE"
+          printf '%s  %s\n' 'e0db83c0583c686876beccdd77220c0b810aa04172d2800849f3f2c05d918047' tools/verify_source_manifest.py | sha256sum -c -
+          (cd "$RUNNER_TEMP" && python3 -I -S -B "$GITHUB_WORKSPACE/tools/verify_source_manifest.py" --expected-root "$GITHUB_WORKSPACE")
+          printf '%s  %s\n' 'f2e474b0e1e955fce337a4178d012490e8e6a602e51e760101f52074ca5d7295' tools/verify_host_evidence.py | sha256sum -c -
+          python3 -I -S -B tools/verify_host_evidence.py "$RUNNER_TEMP/sarah-host-downloaded" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Record build environment and Gradle dependency provenance
+        run: |
+          mkdir -p evidence
+          printf 'GITHUB_SHA=%s\nGITHUB_RUN_ID=%s\nGITHUB_RUN_ATTEMPT=%s\nRUNNER_OS=%s\nRUNNER_ARCH=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_OS" "$RUNNER_ARCH" > evidence/ENVIRONMENT.txt
+          java -version 2> evidence/JAVA_VERSION.txt
+          gradle --version > evidence/GRADLE_VERSION.txt
+          gradle --no-daemon :app:dependencies --configuration debugRuntimeClasspath > evidence/GRADLE_DEBUG_DEPENDENCIES.txt
+          env | grep -E '^(ImageOS|ImageVersion|ANDROID_HOME|JAVA_HOME)=' | sort >> evidence/ENVIRONMENT.txt
+      - name: Compile offline APK, without deployment
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+      - name: Record APK audit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          sha256sum "$APK" | tee evidence/APK_SHA256.txt
+          find app/src/main -type f -print0 | sort -z | xargs -0 sha256sum > evidence/SOURCE_SHA256.txt
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee evidence/APK_SIGNATURE.txt
+          "$AAPT" dump permissions "$APK" | tee evidence/PERMISSIONS.txt
+          if grep -Eq 'uses-permission|permission:' evidence/PERMISSIONS.txt; then
+            echo 'FAIL: APK unexpectedly requests permissions'; exit 1
+          fi
+          printf 'COMMIT_SHA=%s\nWORKFLOW_RUN=%s\nSCOPE=BUILD_ONLY_NOT_AUTHORIZED_FOR_INSTALL\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > evidence/BUILD_PROVENANCE.txt
+      - name: Retain candidate for independent auditor, not device use
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarah-m2-offline-build-only-${{ github.run_number }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            evidence/*.txt
+            ${{ runner.temp }}/sarah-host-downloaded/*.txt
+            ${{ runner.temp }}/sarah-host-downloaded/*.json
+          retention-days: 14
+          if-no-files-found: error
