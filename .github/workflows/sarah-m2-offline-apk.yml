@@ -94,9 +94,10 @@ jobs:
           (cd "$RUNNER_TEMP" && python3 -I -S -B "$GITHUB_WORKSPACE/tools/verify_source_manifest.py" --expected-root "$GITHUB_WORKSPACE")
           printf '%s  %s\n' 'f2e474b0e1e955fce337a4178d012490e8e6a602e51e760101f52074ca5d7295' tools/verify_host_evidence.py | sha256sum -c -
           python3 -I -S -B tools/verify_host_evidence.py "$RUNNER_TEMP/sarah-host-downloaded" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-      - uses: android-actions/setup-android@v3
-      - name: Install SDK 35 for build only
-        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Set up Android SDK
+  uses: android-actions/setup-android@v3
+  with:
+    packages: 'platform-tools'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
