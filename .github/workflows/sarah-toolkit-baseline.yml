@@ -1,0 +1,97 @@
+
+name: SARAH Android Toolkit Baseline
+
+on:
+  push:
+    branches:
+      - sarah/android-toolkit-evaluation-20261020
+    paths:
+      - docs/android-toolkit-evaluation.md
+      - .github/workflows/sarah-toolkit-baseline.yml
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: Read-only Android baseline inspection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout isolated branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Inspect project metadata
+        shell: bash
+        run: |
+          mkdir -p evidence
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          files = [
+              "build.gradle",
+              "settings.gradle",
+              "gradle.properties",
+              "app/build.gradle",
+              "docs/android-toolkit-evaluation.md",
+          ]
+
+          report = {
+              "scope": "HOST_ONLY_READ_ONLY",
+              "status": "DEVELOPER_BASELINE_ONLY",
+              "files": {},
+              "checks": {},
+          }
+
+          for filename in files:
+              path = Path(filename)
+              if not path.is_file():
+                  raise SystemExit(
+                      "Required file missing: " + filename
+                  )
+              data = path.read_bytes()
+              report["files"][filename] = {
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "bytes": len(data),
+              }
+
+          root = Path("build.gradle").read_text()
+          app = Path("app/build.gradle").read_text()
+          props = Path("gradle.properties").read_text()
+
+          checks = {
+              "gradle_plugin_8_6_1": "8.6.1" in root,
+              "compile_sdk_35": "compileSdk 35" in app,
+              "minimum_sdk_26": "minSdk 26" in app,
+              "androidx_currently_disabled":
+                  "android.useAndroidX=false" in props,
+          }
+
+          report["checks"] = checks
+
+          Path("evidence/baseline.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True)
+              + "\n",
+              encoding="utf-8",
+          )
+
+          print(json.dumps(report, indent=2))
+
+          if not all(checks.values()):
+              raise SystemExit("Baseline differs from expectations")
+          PY
+
+      - name: Publish baseline evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sarah-android-toolkit-baseline
+          path: evidence/baseline.json
+          if-no-files-found: warn
+          retention-days: 30
+          
